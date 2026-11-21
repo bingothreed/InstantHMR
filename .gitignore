@@ -15,9 +15,12 @@ venv/
 *.mp4
 *.tar
 *.tar.gz
-models/
+*.whl
+models/*
+!models/README.md
 runs/
 checkpoints/
+.tmp_wheels/
 
 # training data
 data/
