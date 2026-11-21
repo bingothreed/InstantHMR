@@ -76,6 +76,9 @@ def parse_args() -> argparse.Namespace:
                    help="video: start muted, the panel's sound switch stays available (default)")
     p.add_argument("--no-panel", action="store_true",
                    help="do not open the small control panel (audio and 3D switches then only come from flags)")
+    p.add_argument("--exit-when-done", action="store_true",
+                   help="quit as soon as every frame is processed (by default the viewer and the panel stay "
+                        "open so the recording can be replayed with sound)")
     return p.parse_args()
 
 
@@ -180,13 +183,29 @@ def main() -> None:
                   "stay aligned; untick 严格对齐 in the panel to let it play straight through, or use a "
                   "lighter --detector / --quality for real-time")
         player.set_limit(None)
+    if len(history) > 1:
+        det, hmr = np.median(np.array(history[1:]), axis=0)
+        print(f"median over {len(history) - 1} frames: detector {det:.1f} ms, InstantHMR {hmr:.1f} ms")
+
+    # Keep the viewer usable after the last frame: the panel must outlive the run, otherwise there is no
+    # way to hear the clip again when the recording is replayed in the viewer.
+    keep_open = panel is not None and not panel.closed and not args.exit_when_done and not args.no_viewer
+    if keep_open:
+        print("[panel] all frames logged: replay the timeline in the viewer, then click 从头播放 in the panel "
+              "(close the panel to quit)")
+        try:
+            while not panel.closed and panel.viewer_alive():
+                panel.poll()
+                time.sleep(0.02)
+        except KeyboardInterrupt:
+            pass
+        if not panel.viewer_alive():
+            print("[panel] the Rerun Viewer was closed, exiting")
+            return
     if panel is not None:
         panel.close()
     elif player is not None:
         player.stop()
-    if len(history) > 1:
-        det, hmr = np.median(np.array(history[1:]), axis=0)
-        print(f"median over {len(history) - 1} frames: detector {det:.1f} ms, InstantHMR {hmr:.1f} ms")
 
 
 if __name__ == "__main__":

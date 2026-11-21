@@ -131,6 +131,9 @@ class ControlPanel:
         row_c.grid(row=2, column=0, sticky="we")
         self.status = tk.Label(row_c, text="", anchor="w", font=("Consolas", 8))
         self.status.pack(side="left")
+        if player is not None:
+            tk.Button(row_c, text="▶ 从头播放", bd=1, padx=5, pady=0, command=self.replay_audio,
+                      **opts).pack(side="right", padx=(0, 4))
         tk.Button(row_c, text="✕", bd=0, padx=5, pady=0, command=self.close,
                   **opts).pack(side="right")
 
@@ -244,6 +247,22 @@ class ControlPanel:
     def _apply_volume(self) -> None:
         if self.player is not None:
             self.player.volume = float(self.volume.get()) / 100.0
+
+    def replay_audio(self) -> None:
+        """Play the clip from the beginning, free-running, for listening along with a viewer replay."""
+        if self.player is None:
+            return
+        self.player.seek(0.0)
+        self.player.set_limit(None)
+        self.player.set_enabled(True)
+        self.sound.set(True)
+        print("[audio] replaying from the start; press play in the viewer at the same moment to line up")
+
+    def viewer_alive(self) -> bool:
+        """False once the Rerun Viewer window has been closed."""
+        if not self._viewer_hwnd or not hasattr(ctypes, "windll"):
+            return True
+        return bool(ctypes.windll.user32.IsWindow(self._viewer_hwnd))
 
     # -- per frame -------------------------------------------------------------------------------
     def poll(self) -> None:
