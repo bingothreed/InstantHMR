@@ -108,13 +108,14 @@ class RerunVisualizer:
 
         centre = first.joints_3d_cam.mean(0)
         distance = max(4 * float(np.abs(first.joints_3d_cam - centre).max()), 1.5)
-        # `contents` is what the 3D view draws: by default only `world/**`, so the camera pinhole and the
-        # frame's image plane (both logged outside `world`) stay out of the 3D box.
-        contents = "$origin/**" if self.camera_in_3d else ["world/**"]
+        # The 3D view lists everything under `/`, but the camera pinhole and the frame's image plane start
+        # hidden via a blueprint `EntityBehavior` override -- the same thing the viewer's own eye toggle
+        # writes, so click the eye next to `camera` in the Blueprint panel to bring them back.
+        overrides = {} if self.camera_in_3d else {"camera": rrb.EntityBehavior(visible=False)}
         self.rr.send_blueprint(rrb.Blueprint(rrb.Horizontal(
             rrb.Vertical(rrb.Spatial2DView(origin="camera/image", name="Camera"),
                          rrb.TimeSeriesView(origin="timing", name="Latency (ms)"), row_shares=[3, 1]),
-            rrb.Spatial3DView(origin="/", name="3D", contents=contents,
+            rrb.Spatial3DView(origin="/", name="3D", contents="$origin/**", overrides=overrides,
                               background=rrb.Background(color=[25, 25, 25]),
                               line_grid=rrb.LineGrid3D(visible=self.viewer_grid),
                               eye_controls=rrb.EyeControls3D(
