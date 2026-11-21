@@ -59,6 +59,11 @@ def parse_args() -> argparse.Namespace:
                    help="video: smooth the keypoints and mesh instead (steadiest, but lags on fast motion)")
     p.add_argument("--no-mesh", action="store_true", help="show the skeleton only")
     p.add_argument("--mesh-alpha", type=float, default=0.35, help="mesh opacity (default: 0.35)")
+    p.add_argument("--no-floor", action="store_true", help="3D: hide the ground grid drawn under the people")
+    p.add_argument("--viewer-grid", action="store_true",
+                   help="3D: show the Rerun viewer's built-in line grid (hidden by default)")
+    p.add_argument("--floor-size", type=float, default=4.0, metavar="METRES",
+                   help="3D: side length of the ground grid (default: 4.0)")
     p.add_argument("--save-rrd", metavar="PATH", help="also save the Rerun recording")
     p.add_argument("--no-viewer", action="store_true", help="do not open the Rerun viewer")
     return p.parse_args()
@@ -100,7 +105,9 @@ def main() -> None:
                             detector_stride=args.detector_stride, focal=args.focal, pose_filter=args.pose_filter)
     print(f"InstantHMR runs on {pipeline.hmr.provider}")
     viewer = RerunVisualizer(None if args.no_mesh else pipeline.hmr.faces, args.mesh_alpha,
-                             spawn=not args.no_viewer, save_path=args.save_rrd)
+                             spawn=not args.no_viewer, save_path=args.save_rrd,
+                             floor=not args.no_floor, viewer_grid=args.viewer_grid,
+                             floor_size=args.floor_size)
     smoother = TemporalSmoother() if args.smooth else None
 
     history = []

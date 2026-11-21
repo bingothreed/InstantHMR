@@ -13,22 +13,33 @@ MESH_COLOR = (200, 160, 130)
 JOINT_COLOR = (0, 230, 0)
 BONE_COLOR = (255, 230, 0)
 BOX_COLOR = (0, 200, 255)
+FLOOR_COLOR = (110, 110, 110)
+FLOOR_MAJOR_COLOR = (175, 175, 175)
+FLOOR_AXIS_X = (230, 80, 80)
+FLOOR_AXIS_Z = (80, 140, 230)
+
+# ankles, toes, heels: the lowest points of the body, used to place the floor
+FLOOR_JOINTS = [13, 14, 15, 16, 17, 18, 19, 20]
 
 
 class RerunVisualizer:
     def __init__(self, faces: Optional[np.ndarray] = None, mesh_alpha: float = 0.35, spawn: bool = True,
-                 save_path: Optional[str] = None):
+                 save_path: Optional[str] = None, floor: bool = True, viewer_grid: bool = False,
+                 floor_size: float = 4.0, floor_spacing: float = 0.25):
         import rerun as rr
 
         self.rr = rr
         self.faces = faces
         self.albedo = (*MESH_COLOR, int(round(255 * min(max(mesh_alpha, 0.0), 1.0))))
+        self.floor, self.viewer_grid = floor, viewer_grid
+        self.floor_size, self.floor_spacing = floor_size, floor_spacing
         rr.init("instanthmr", spawn=spawn)
         if save_path:
             rr.save(save_path)
         rr.log("world", rr.ViewCoordinates.RIGHT_HAND_Y_DOWN, static=True)
         self._n_logged = 0
         self._layout_sent = False
+        self._floor_logged = False
 
     def log(self, frame: int, image_rgb: np.ndarray, persons: Sequence[HMRPrediction],
             timings: dict[str, float]) -> None:
@@ -52,12 +63,44 @@ class RerunVisualizer:
         h, w = image_rgb.shape[:2]
         rr.log("camera/image", rr.Image(draw_overlay(image_rgb, persons, timings)))
         if persons:
+            if self.floor and not self._floor_logged:
+                self._log_floor(persons)
+                self._floor_logged = True
             depth = float(np.median([p.cam_trans[2] for p in persons]))
             rr.log("camera", rr.Pinhole(width=w, height=h, focal_length=persons[0].focal_length,
                                         principal_point=[w / 2, h / 2], image_plane_distance=max(0.25 * depth, 0.2)))
             if not self._layout_sent:
                 self._send_layout(persons[0])
                 self._layout_sent = True
+
+    def _log_floor(self, persons: Sequence[HMRPrediction]) -> None:
+        """A ground grid under the people, placed at the lowest foot joint (Y points down here)."""
+        rr = self.rr
+        pts = np.concatenate([p.joints_3d_cam for p in persons], axis=0)
+        feet = pts[[i for i in FLOOR_JOINTS if i < len(pts)]]
+        floor_y = float(feet[:, 1].max()) + 0.02 if len(feet) else float(pts[:, 1].max())
+        cx, cz = float(np.median(pts[:, 0])), float(np.median(pts[:, 2]))
+
+        half = self.floor_size / 2.0
+        n = max(2, int(round(self.floor_size / self.floor_spacing)))
+        step = self.floor_size / n
+        lines, colors = [], []
+        for i in range(n + 1):
+            d = -half + i * step
+            major = i % 4 == 0
+            color = FLOOR_MAJOR_COLOR if major else FLOOR_COLOR
+            x, z = cx + d, cz + d
+            lines.append(np.array([[x, floor_y, cz - half], [x, floor_y, cz + half]], np.float32))
+            colors.append(color)
+            lines.append(np.array([[cx - half, floor_y, z], [cx + half, floor_y, z]], np.float32))
+            colors.append(color)
+        rr.log("world/floor", rr.LineStrips3D(lines, colors=[(*c, 255) for c in colors],
+                                              radii=0.004 if n <= 24 else 0.003), static=True)
+        reach = min(half, 0.5)
+        rr.log("world/floor/axes", rr.Arrows3D(
+            origins=np.array([[cx, floor_y, cz], [cx, floor_y, cz]], np.float32),
+            vectors=np.array([[reach, 0.0, 0.0], [0.0, 0.0, reach]], np.float32),
+            colors=[(*FLOOR_AXIS_X, 255), (*FLOOR_AXIS_Z, 255)], radii=0.006), static=True)
 
     def _send_layout(self, first: HMRPrediction) -> None:
         import rerun.blueprint as rrb
@@ -68,6 +111,7 @@ class RerunVisualizer:
             rrb.Vertical(rrb.Spatial2DView(origin="camera/image", name="Camera"),
                          rrb.TimeSeriesView(origin="timing", name="Latency (ms)"), row_shares=[3, 1]),
             rrb.Spatial3DView(origin="/", name="3D", background=rrb.Background(color=[25, 25, 25]),
+                              line_grid=rrb.LineGrid3D(visible=self.viewer_grid),
                               eye_controls=rrb.EyeControls3D(
                                   position=[float(centre[0]), float(centre[1]), float(centre[2] - distance)],
                                   look_target=centre.tolist(), eye_up=[0.0, -1.0, 0.0], kind=rrb.Eye3DKind.Orbital)),
