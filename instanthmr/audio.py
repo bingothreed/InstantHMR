@@ -81,6 +81,11 @@ class AudioPlayer:
 
         self.clip, self.enabled, self.volume = clip, enabled, volume
         self._pos = 0
+        # When set (seconds), the playhead may not run further than `limit + lead`: the picture cannot
+        # keep up with real time, so the sound waits for it instead of drifting away.
+        self.limit: float | None = None
+        self.lead = 0.35
+        self.blocks = self.gated = 0
         self._stream = sd.OutputStream(samplerate=clip.rate, channels=1, dtype="float32",
                                        blocksize=1024, callback=self._callback)
         self._stream.start()
@@ -88,10 +93,15 @@ class AudioPlayer:
     # -- audio callback -------------------------------------------------------------------------
     def _callback(self, outdata, frames, time_info, status) -> None:
         samples = self.clip.samples
+        self.blocks += 1
         if not self.enabled:
             outdata.fill(0)
             return
         pos = self._pos
+        if self.limit is not None and pos >= (self.limit + self.lead) * self.clip.rate:
+            self.gated += 1
+            outdata.fill(0)
+            return
         chunk = samples[pos:pos + frames]
         n = len(chunk)
         if n:
@@ -118,6 +128,14 @@ class AudioPlayer:
 
     def set_enabled(self, enabled: bool) -> None:
         self.enabled = bool(enabled)
+
+    def set_limit(self, seconds: float | None) -> None:
+        """Let the sound run only up to the frame being shown (plus `lead`); None lets it free-run."""
+        self.limit = None if seconds is None else float(seconds)
+
+    def gated_ratio(self) -> float:
+        """Share of output blocks that were silenced to wait for the picture, 0 when nothing was gated."""
+        return self.gated / self.blocks if self.blocks else 0.0
 
     def stop(self) -> None:
         try:

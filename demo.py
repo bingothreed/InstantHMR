@@ -143,16 +143,24 @@ def main() -> None:
             now[0] = t
             if panel is not None:
                 panel.poll()
-            sync = (player is not None and player.enabled and panel is not None
-                    and not panel.closed and bool(panel.sync.get()))
+            panel_open = panel is not None and not panel.closed
+            sync = (player is not None and player.enabled
+                    and (True if panel is None else (panel_open and bool(panel.sync.get()))))
             if sync:
-                # Audio is the master clock: hold the frames back until the sound reaches them, and jump
-                # the sound forward if a stall let it run ahead. With sync off the loop runs at full speed.
-                if player.cursor > t + 0.25:
+                # Audio is the master clock: hold the frames back until the sound reaches them, and never
+                # let the playhead run more than `player.lead` past the frame on screen (it waits instead,
+                # which is what happens on a machine slower than the clip, e.g. 30 fps input at ~18 fps).
+                player.set_limit(t)
+                if player.cursor > t + 2.0:   # a long stall, e.g. the model reloading: jump back
                     player.seek(t)
-                while player.cursor + 0.02 < t and not player.at_end and not panel.closed:
-                    panel.poll()
+                while player.cursor + 0.02 < t and not player.at_end:
+                    if panel_open:
+                        panel.poll()
+                        if panel.closed:
+                            break
                     time.sleep(0.004)
+            elif player is not None:
+                player.set_limit(None)
             result = pipeline(rgb, t)
             persons = smoother(result.persons, t) if smoother else result.persons
             timings = {"detector": result.detector_ms, "InstantHMR": result.hmr_ms}
@@ -163,6 +171,15 @@ def main() -> None:
                       f"InstantHMR {result.hmr_ms:5.1f} ms")
     except KeyboardInterrupt:
         pass
+    if player is not None:
+        gate = player.gated_ratio()
+        note = f", waited for the picture {100 * gate:.0f}% of the time" if gate else ""
+        print(f"[audio] playhead stopped at {player.cursor:.1f} s of {player.duration:.1f} s{note}")
+        if gate > 0.15:
+            print("[audio] the picture could not keep up with the clip, so the sound keeps stopping to "
+                  "stay aligned; untick 严格对齐 in the panel to let it play straight through, or use a "
+                  "lighter --detector / --quality for real-time")
+        player.set_limit(None)
     if panel is not None:
         panel.close()
     elif player is not None:
