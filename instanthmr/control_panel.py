@@ -12,9 +12,10 @@ from __future__ import annotations
 
 import ctypes
 import ctypes.wintypes as wt
+import os
 from typing import Callable, Optional
 
-from instanthmr.audio import AudioPlayer
+from instanthmr.audio import AudioPlayer, list_output_devices, device_name
 from instanthmr.visualizer import RerunVisualizer
 
 VIEWER_TITLE = "Rerun Viewer"
@@ -70,12 +71,13 @@ class ControlPanel:
 
     def __init__(self, player: Optional[AudioPlayer] = None, viewer: Optional[RerunVisualizer] = None,
                  clock: Callable[[], float] = lambda: 0.0, has_audio: bool = True,
-                 dock: bool = True) -> None:
+                 dock: bool = True, video_path: Optional[str] = None) -> None:
         import tkinter as tk
         from tkinter import font as tkfont
 
         self._tk = tk
         self.player, self.viewer = player, viewer
+        self.video_path = video_path
         self._clock = clock
         self.closed = False
         self._viewer_hwnd: Optional[int] = None
@@ -111,9 +113,29 @@ class ControlPanel:
             tk.Scale(row_a, from_=0, to=100, orient="horizontal", length=90, variable=self.volume,
                      showvalue=False, command=lambda _v: self._apply_volume()).pack(side="left", padx=(6, 0))
 
+            row_dev = tk.Frame(body)
+            row_dev.grid(row=1, column=0, sticky="w")
+            tk.Label(row_dev, text="输出", **opts).pack(side="left")
+            # The system default is often a headset while people listen on the monitor speakers, which
+            # looks exactly like "no sound" -- so make the device switchable instead of guessing.
+            self._devices = list_output_devices()
+            current = player.device if player.device is not None else None
+            label = f"{current}: {device_name(current)}" if current is not None else "(系统默认)"
+            if self._devices and current is not None and current not in [i for i, _ in self._devices]:
+                label = "(系统默认)"
+            self.device_label = tk.StringVar(value=label)
+            menu = tk.OptionMenu(row_dev, self.device_label, *[f"{i}: {n}" for i, n in self._devices],
+                                 command=self._switch_device)
+            if self._devices:
+                if tiny:
+                    menu.configure(font=tiny)
+                menu.pack(side="left", padx=(4, 0))
+            else:
+                tk.Label(row_dev, text=device_name(player.device), **opts).pack(side="left")
+
         if viewer is not None:
             row_b = tk.Frame(body)
-            row_b.grid(row=1, column=0, sticky="w")
+            row_b.grid(row=2, column=0, sticky="w")
             self.camera_in_3d = tk.BooleanVar(value=bool(viewer.camera_in_3d))
             tk.Checkbutton(row_b, text="3D 相机/图像平面", variable=self.camera_in_3d,
                            command=lambda: viewer.update_layout(camera_in_3d=self.camera_in_3d.get()),
@@ -128,11 +150,16 @@ class ControlPanel:
                            **opts).pack(side="left", padx=(6, 0))
 
         row_c = tk.Frame(body)
-        row_c.grid(row=2, column=0, sticky="we")
+        row_c.grid(row=3, column=0, sticky="we")
         self.status = tk.Label(row_c, text="", anchor="w", font=("Consolas", 8))
         self.status.pack(side="left")
         if player is not None:
             tk.Button(row_c, text="▶ 从头播放", bd=1, padx=5, pady=0, command=self.replay_audio,
+                      **opts).pack(side="right", padx=(0, 4))
+        if self.video_path:
+            # The only way to get picture and sound in one playback: the exported mp4, opened in the
+            # system player. The Rerun viewer itself cannot play audio.
+            tk.Button(row_c, text="▶ 带声音的视频", bd=1, padx=5, pady=0, command=self.open_video,
                       **opts).pack(side="right", padx=(0, 4))
         tk.Button(row_c, text="✕", bd=0, padx=5, pady=0, command=self.close,
                   **opts).pack(side="right")
@@ -143,7 +170,11 @@ class ControlPanel:
         self._dock_target = dock and viewer is not None
         self._apply_dock()
         # Drag by the padding, not by the controls, so clickging a checkbox or the slider still works.
-        self._drag_handles = [body, row_a, row_c, self.status] + ([row_b] if viewer is not None else [])
+        self._drag_handles = [body, row_a, row_c, self.status]
+        if viewer is not None:
+            self._drag_handles.append(row_b)
+        if player is not None:
+            self._drag_handles.append(row_dev)
         for widget in self._drag_handles:
             widget.bind("<ButtonPress-1>", self._drag_start)
             widget.bind("<B1-Motion>", self._drag_move)
@@ -247,6 +278,23 @@ class ControlPanel:
     def _apply_volume(self) -> None:
         if self.player is not None:
             self.player.volume = float(self.volume.get()) / 100.0
+
+    def _switch_device(self, label: str) -> None:
+        if self.player is None:
+            return
+        try:
+            index = int(str(label).split(":", 1)[0])
+        except ValueError:
+            return
+        self.player.set_device(index)
+
+    def open_video(self) -> None:
+        if not self.video_path:
+            return
+        try:
+            os.startfile(self.video_path)  # noqa: S606 - opening our own export in the user's player
+        except Exception as e:
+            print(f"[panel] could not open {self.video_path}: {e}")
 
     def replay_audio(self) -> None:
         """Play the clip from the beginning, free-running, for listening along with a viewer replay."""

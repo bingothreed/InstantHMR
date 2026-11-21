@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import time
 
@@ -16,7 +17,8 @@ import numpy as np
 
 from instanthmr import DEFAULT_FIT, DEFAULT_MODEL, MODELS, PosePipeline
 from instanthmr.smoothing import TemporalSmoother
-from instanthmr.visualizer import RerunVisualizer
+from instanthmr.video_writer import OverlayVideoWriter
+from instanthmr.visualizer import RerunVisualizer, draw_overlay
 
 # `--quality` shortcut -> released model name. `best` and `medium` are the same graph: the highest-accuracy
 # tier (EMDB-1 PA-MPJPE 44.4 mm with --fit 2), non-commercial (SAM License). `commercial` is the
@@ -76,6 +78,12 @@ def parse_args() -> argparse.Namespace:
                    help="video: start muted, the panel's sound switch stays available (default)")
     p.add_argument("--no-panel", action="store_true",
                    help="do not open the small control panel (audio and 3D switches then only come from flags)")
+    p.add_argument("--audio-device", metavar="INDEX",
+                   help="index of the output device for the clip audio (see the panel's 输出 list); "
+                        "default: the system default, which is often a headset you are not wearing")
+    p.add_argument("--save-video", metavar="PATH",
+                   help="also write the 2D view (image + boxes + skeleton + timings) to an mp4 together with "
+                        "the clip's audio, so it can be replayed with sound in a normal player")
     p.add_argument("--exit-when-done", action="store_true",
                    help="quit as soon as every frame is processed (by default the viewer and the panel stay "
                         "open so the recording can be replayed with sound)")
@@ -122,23 +130,45 @@ def main() -> None:
                              floor=not args.no_floor, viewer_grid=args.viewer_grid,
                              floor_size=args.floor_size, camera_in_3d=args.show_camera_3d)
     smoother = TemporalSmoother() if args.smooth else None
-    player = panel = None
+    player = panel = writer = None
     now = [0.0]
+    clip_audio = None
     if args.video:
-        from instanthmr.audio import has_audio, open_clip_audio
+        from instanthmr.audio import has_audio, load_clip, open_clip_audio
 
         has_track = has_audio(args.video)
         if has_track:
-            player = open_clip_audio(args.video)
+            device = int(args.audio_device) if args.audio_device is not None else None
+            player = open_clip_audio(args.video, device=device)
             if player is not None:
                 player.set_enabled(bool(args.audio))
+            if args.save_video:
+                try:
+                    clip_audio = load_clip(args.video)
+                except Exception as e:
+                    print(f"[video] could not decode the audio for --save-video: {e}")
     else:
         has_track = False
     if not args.no_panel:
         from instanthmr.control_panel import ControlPanel
 
         panel = ControlPanel(player, viewer if not args.no_viewer else None,
-                             clock=lambda: now[0], has_audio=has_track)
+                             clock=lambda: now[0], has_audio=has_track,
+                             video_path=args.save_video)
+
+    out_fps = 30.0
+    if args.save_video:
+        if args.video:
+            cap = cv2.VideoCapture(args.video)
+            out_fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+            cap.release()
+        if clip_audio is None and args.video:
+            from instanthmr.audio import load_clip
+
+            try:
+                clip_audio = load_clip(args.video)
+            except Exception:
+                clip_audio = None
 
     history = []
     try:
@@ -168,6 +198,12 @@ def main() -> None:
             persons = smoother(result.persons, t) if smoother else result.persons
             timings = {"detector": result.detector_ms, "InstantHMR": result.hmr_ms}
             viewer.log(i, rgb, persons, timings)
+            if args.save_video:
+                overlay = draw_overlay(rgb, persons, timings)
+                if writer is None:
+                    writer = OverlayVideoWriter(args.save_video, out_fps,
+                                                (overlay.shape[1], overlay.shape[0]), clip_audio)
+                writer.write(overlay)
             history.append((result.detector_ms, result.hmr_ms))
             if i % 30 == 0:
                 print(f"frame {i:5d}  {len(persons)} person(s)  detector {result.detector_ms:5.1f} ms  "
@@ -183,6 +219,11 @@ def main() -> None:
                   "stay aligned; untick 严格对齐 in the panel to let it play straight through, or use a "
                   "lighter --detector / --quality for real-time")
         player.set_limit(None)
+    if writer is not None:
+        writer.close()
+        size_mb = os.path.getsize(args.save_video) / 1024 / 1024 if os.path.exists(args.save_video) else 0.0
+        has_sound = "with sound" if clip_audio is not None else "picture only, no audio decoded"
+        print(f"[video] wrote {args.save_video} ({size_mb:.1f} MB, {has_sound})")
     if len(history) > 1:
         det, hmr = np.median(np.array(history[1:]), axis=0)
         print(f"median over {len(history) - 1} frames: detector {det:.1f} ms, InstantHMR {hmr:.1f} ms")

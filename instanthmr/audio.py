@@ -69,6 +69,22 @@ def load_clip(path: str, rate: int = SAMPLE_RATE) -> Optional[AudioClip]:
     return clip if len(clip.samples) else None
 
 
+def list_output_devices() -> list[tuple[int, str]]:
+    """(index, name) of every device that can play sound."""
+    import sounddevice as sd
+
+    return [(i, d["name"]) for i, d in enumerate(sd.query_devices()) if d["max_output_channels"] > 0]
+
+
+def device_name(index: int | None) -> str:
+    import sounddevice as sd
+
+    try:
+        return str(sd.query_devices(index)["name"])
+    except Exception:
+        return "system default"
+
+
 class AudioPlayer:
     """Streams a clip on the default output device. `cursor` is the playhead in seconds.
 
@@ -76,19 +92,37 @@ class AudioPlayer:
     on is instant. Seeking is a plain move of the sample position, so it is safe from any thread.
     """
 
-    def __init__(self, clip: AudioClip, enabled: bool = True, volume: float = 1.0) -> None:
-        import sounddevice as sd
-
+    def __init__(self, clip: AudioClip, enabled: bool = True, volume: float = 1.0,
+                 device: int | None = None) -> None:
         self.clip, self.enabled, self.volume = clip, enabled, volume
+        self.device = device
         self._pos = 0
         # When set (seconds), the playhead may not run further than `limit + lead`: the picture cannot
         # keep up with real time, so the sound waits for it instead of drifting away.
         self.limit: float | None = None
         self.lead = 0.35
         self.blocks = self.gated = 0
-        self._stream = sd.OutputStream(samplerate=clip.rate, channels=1, dtype="float32",
-                                       blocksize=1024, callback=self._callback)
+        self._stream = None
+        self._open_stream()
+
+    def _open_stream(self) -> None:
+        import sounddevice as sd
+
+        if self._stream is not None:
+            try:
+                self._stream.stop()
+                self._stream.close()
+            except Exception:
+                pass
+        self._stream = sd.OutputStream(samplerate=self.clip.rate, channels=1, dtype="float32",
+                                       blocksize=1024, device=self.device, callback=self._callback)
         self._stream.start()
+
+    def set_device(self, device: int) -> None:
+        """Move the stream to another output device, keeping the playhead where it is."""
+        self.device = device
+        self._open_stream()
+        print(f"[audio] output device -> {device_name(device)}")
 
     # -- audio callback -------------------------------------------------------------------------
     def _callback(self, outdata, frames, time_info, status) -> None:
@@ -145,7 +179,7 @@ class AudioPlayer:
             pass
 
 
-def open_clip_audio(path: str, rate: int = SAMPLE_RATE) -> Optional[AudioPlayer]:
+def open_clip_audio(path: str, rate: int = SAMPLE_RATE, device: int | None = None) -> Optional[AudioPlayer]:
     """Load `path`'s audio and start streaming it; None (with a printed reason) when it cannot play."""
     if not has_audio(path):
         print("[audio] no audio track in this file, nothing to play")
@@ -159,9 +193,10 @@ def open_clip_audio(path: str, rate: int = SAMPLE_RATE) -> Optional[AudioPlayer]
         print("[audio] the audio track decoded to zero samples, nothing to play")
         return None
     try:
-        player = AudioPlayer(clip)
+        player = AudioPlayer(clip, device=device)
     except Exception as e:  # no output device, PortAudio missing, ...
         print(f"[audio] could not open the output device: {e}")
         return None
-    print(f"[audio] {clip.duration:.1f} s of sound ready; toggle it in the audio panel")
+    print(f"[audio] {clip.duration:.1f} s of sound on '{device_name(device)}'; "
+          "switch it on/off in the panel")
     return player

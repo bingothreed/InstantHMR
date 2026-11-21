@@ -131,6 +131,8 @@ detector, then InstantHMR runs on each of them.
 | `--detector-stride` | run the detector every N frames; in between, each person's box follows their 2D keypoints |
 | `--no-mesh` | skeleton only |
 | `--save-rrd` | also save the recording, to replay with `rerun file.rrd` |
+| `--save-video` | also write the 2D view with the clip's audio to an mp4 (see below) |
+| `--audio-device` | output device index for the clip's sound, as listed in the panel |
 
 The latencies in the tables above are the model alone, as measured in the paper. The demo's timings
 are what a frame costs end to end in Python. On an RTX 4070 with TensorRT, the InstantHMR stage takes
@@ -139,6 +141,29 @@ for the keypoints and the full 18,439-vertex mesh) and 3.3 ms with `--fit 2`; wi
 5.7 ms. The fit graphs are faster end to end than the network alone (3.3 ms with TensorRT), because
 they take the crop as 8-bit pixels and run in fp16. The detector is the slow stage (about 27 ms for
 RF-DETR medium); for a faster live demo, use `--detector nano` or `--detector-stride 3`.
+
+## Sound when the clip has an audio track
+
+The Rerun viewer has no audio playback (no audio archetype, and it does not tell the process whether
+the timeline is playing), so the sound is played by the demo process and kept in step with the
+frames: the audio is the master clock, each frame waits for it, and the audio is never allowed to run
+more than a third of a second past the picture. A small panel docks to the top-right corner of the
+viewer with the switches: 原声同步播放, 严格对齐 (hold the picture to the sound), the volume, and
+**输出**, the output device -- the system default is often a headset you are not wearing, which
+looks exactly like "no sound"; pick the monitor's speakers there instead.
+
+Because the viewer cannot carry the sound, the way to watch the whole clip with picture and sound
+together is one file:
+
+```bash
+python demo.py --video clip.mp4 --save-video out.mp4
+```
+
+which writes the 2D view (image, boxes, skeleton, timings) as H.264 with the clip's own audio as AAC,
+exactly as it was processed -- open it in any player. When `--save-video` is used, the panel also
+shows a **▶ 带声音的视频** button that opens that file. Other switches: `--audio` starts unmuted,
+`--audio-device N` picks the output device at start-up (the panel lists the numbers), `--no-panel`
+hides the panel, and `--exit-when-done` stops instead of keeping the viewer open for a replay.
 
 ## Use it from Python
 
