@@ -25,7 +25,8 @@ FLOOR_JOINTS = [13, 14, 15, 16, 17, 18, 19, 20]
 class RerunVisualizer:
     def __init__(self, faces: Optional[np.ndarray] = None, mesh_alpha: float = 0.35, spawn: bool = True,
                  save_path: Optional[str] = None, floor: bool = True, viewer_grid: bool = False,
-                 floor_size: float = 4.0, floor_spacing: float = 0.25, camera_in_3d: bool = False):
+                 floor_size: float = 4.0, floor_spacing: float = 0.25, camera_in_3d: bool = False,
+                 fps: float = 30.0):
         import rerun as rr
 
         self.rr = rr
@@ -34,6 +35,15 @@ class RerunVisualizer:
         self.floor, self.viewer_grid = floor, viewer_grid
         self.floor_size, self.floor_spacing = floor_size, floor_spacing
         self.camera_in_3d = camera_in_3d
+        # The time panel's playback state is part of the blueprint, and Rerun 0.31 applies changes
+        # made here to a running viewer. The demo uses that to replay a finished recording in real
+        # time, with the clip's sound started at the same moment. `fps` is the timeline's rate: the
+        # `frame` timeline is a sequence, and the viewer advances it by this many frames per second.
+        self.fps = float(fps) if fps and fps > 0 else 30.0
+        self.timeline = "frame"
+        self.play_state = "Following"
+        self.playback_speed = 1.0
+        self.loop_mode = "Off"
         if spawn:
             self._put_rerun_on_path()
         rr.init("instanthmr", spawn=spawn)
@@ -124,11 +134,14 @@ class RerunVisualizer:
             vectors=np.array([[reach, 0.0, 0.0], [0.0, 0.0, reach]], np.float32),
             colors=[(*FLOOR_AXIS_X, 255), (*FLOOR_AXIS_Z, 255)], radii=0.006), static=True)
 
-    def _send_layout(self, centre: np.ndarray, spread: float) -> None:
+    def _send_layout(self, centre: Optional[np.ndarray] = None, spread: Optional[float] = None) -> None:
         import rerun.blueprint as rrb
 
-        self._centre = np.asarray(centre, dtype=np.float32)
-        self._spread = float(spread)
+        if centre is not None:
+            self._centre = np.asarray(centre, dtype=np.float32)
+        if spread is not None:
+            self._spread = float(spread)
+        centre = self._centre if self._centre is not None else np.zeros(3, dtype=np.float32)
         distance = max(4 * self._spread, 1.5)
         # The 3D view lists everything under `/`; the things a viewer-side query cannot reach are hidden
         # with blueprint `EntityBehavior` overrides instead, which is the same component the viewer's own
@@ -139,6 +152,11 @@ class RerunVisualizer:
             overrides["camera"] = rrb.EntityBehavior(visible=False)
         if not self.floor:
             overrides["world/floor"] = rrb.EntityBehavior(visible=False)
+        # Every blueprint sent to the viewer replaces the active one, so the time panel has to be in
+        # all of them -- a layout-only blueprint would reset the playback state to "following".
+        time_panel = rrb.TimePanel(timeline=self.timeline, playback_speed=self.playback_speed,
+                                   fps=self.fps, play_state=self.play_state,
+                                   loop_mode=self.loop_mode)
         self.rr.send_blueprint(rrb.Blueprint(rrb.Horizontal(
             rrb.Vertical(rrb.Spatial2DView(origin="camera/image", name="Camera"),
                          rrb.TimeSeriesView(origin="timing", name="Latency (ms)"), row_shares=[3, 1]),
@@ -146,11 +164,34 @@ class RerunVisualizer:
                               background=rrb.Background(color=[25, 25, 25]),
                               line_grid=rrb.LineGrid3D(visible=self.viewer_grid),
                               eye_controls=rrb.EyeControls3D(
-                                  position=[float(self._centre[0]), float(self._centre[1]),
-                                            float(self._centre[2] - distance)],
-                                  look_target=self._centre.tolist(), eye_up=[0.0, -1.0, 0.0],
+                                  position=[float(centre[0]), float(centre[1]),
+                                            float(centre[2] - distance)],
+                                  look_target=centre.tolist(), eye_up=[0.0, -1.0, 0.0],
                                   kind=rrb.Eye3DKind.Orbital)),
-            column_shares=[2, 3])))
+            column_shares=[2, 3]),
+            time_panel))
+
+    def set_time_panel(self, *, play_state: Optional[str] = None, playback_speed: Optional[float] = None,
+                       fps: Optional[float] = None, loop_mode: Optional[str] = None,
+                       timeline: Optional[str] = None) -> None:
+        """Drive the viewer's time panel (play/pause, speed, rate) live, by re-sending the blueprint.
+
+        Rerun 0.31 reads these blueprint components on every frame: asking for ``Playing`` while the
+        cursor sits at the end makes the viewer start again from the first frame, and asking for
+        ``Following`` moves the cursor to the end. The control panel's replay button uses that pair
+        to restart a finished recording from the beginning while it starts the sound.
+        """
+        if play_state is not None:
+            self.play_state = str(play_state)
+        if playback_speed is not None:
+            self.playback_speed = float(playback_speed)
+        if fps is not None:
+            self.fps = float(fps)
+        if loop_mode is not None:
+            self.loop_mode = str(loop_mode)
+        if timeline is not None:
+            self.timeline = str(timeline)
+        self._send_layout()
 
     def update_layout(self, camera_in_3d: Optional[bool] = None, floor: Optional[bool] = None,
                       viewer_grid: Optional[bool] = None) -> None:
@@ -161,8 +202,7 @@ class RerunVisualizer:
             self.floor = bool(floor)
         if viewer_grid is not None:
             self.viewer_grid = bool(viewer_grid)
-        if self._centre is not None:
-            self._send_layout(self._centre, self._spread)
+        self._send_layout()
 
 
 def draw_overlay(image_rgb: np.ndarray, persons: Sequence[HMRPrediction], timings: dict[str, float]) -> np.ndarray:

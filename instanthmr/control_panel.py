@@ -13,6 +13,7 @@ from __future__ import annotations
 import ctypes
 import ctypes.wintypes as wt
 import os
+import time
 from typing import Callable, Optional
 
 from instanthmr.audio import AudioPlayer, list_output_devices, device_name
@@ -80,6 +81,10 @@ class ControlPanel:
         self.video_path = video_path
         self._clock = clock
         self.closed = False
+        # True until the frame loop is over; replay only makes sense on a finished recording.
+        self.processing = True
+        self._replay_anchor: Optional[float] = None
+        self._replay_after: Optional[str] = None
         self._viewer_hwnd: Optional[int] = None
         self._docked = False
         self._dock_pending = False
@@ -154,7 +159,7 @@ class ControlPanel:
         self.status = tk.Label(row_c, text="", anchor="w", font=("Consolas", 8))
         self.status.pack(side="left")
         if player is not None:
-            tk.Button(row_c, text="▶ 从头播放", bd=1, padx=5, pady=0, command=self.replay_audio,
+            tk.Button(row_c, text="▶ 从头播放", bd=1, padx=5, pady=0, command=self.replay,
                       **opts).pack(side="right", padx=(0, 4))
         if self.video_path:
             # The only way to get picture and sound in one playback: the exported mp4, opened in the
@@ -270,10 +275,16 @@ class ControlPanel:
         on = bool(self.sound.get())
         self.player.set_enabled(on)
         if on:
-            self.player.seek(self._clock())
+            self.player.seek(self._sound_position())
             print(f"[audio] sound on, realigned to {self.player.cursor:.1f} s")
         else:
             print("[audio] sound off")
+
+    def _sound_position(self) -> float:
+        """Where the sound should resume: the clip being replayed, or the frame being processed."""
+        if self._replay_anchor is not None and self.player is not None:
+            return min(time.perf_counter() - self._replay_anchor, self.player.duration)
+        return self._clock()
 
     def _apply_volume(self) -> None:
         if self.player is not None:
@@ -296,15 +307,44 @@ class ControlPanel:
         except Exception as e:
             print(f"[panel] could not open {self.video_path}: {e}")
 
-    def replay_audio(self) -> None:
-        """Play the clip from the beginning, free-running, for listening along with a viewer replay."""
-        if self.player is None:
+    def replay(self) -> None:
+        """Replay the finished recording from the start, with the clip's sound in step.
+
+        The viewer cannot tell us when the user presses play, but it does apply the time panel's
+        play state from the blueprint. Asking it to follow first puts the cursor on the last frame;
+        asking it to play then takes the viewer's "at the end, start from the beginning" path, so
+        the picture restarts on the first frame at the same moment the sound restarts.
+        """
+        if self.processing:
+            print("[panel] the frames are still being processed; replay once that is done")
             return
-        self.player.seek(0.0)
-        self.player.set_limit(None)
-        self.player.set_enabled(True)
-        self.sound.set(True)
-        print("[audio] replaying from the start; press play in the viewer at the same moment to line up")
+        if self._replay_after is not None:
+            return  # already waiting for the viewer to jump to the end; ignore the second click
+        if self.viewer is not None and not self.viewer_alive():
+            self.viewer = None
+        if self.viewer is not None:
+            self.viewer.set_time_panel(play_state="Following")
+            # One blueprint message per viewer frame: the viewer only reads the latest one.
+            self._replay_after = self.root.after(140, self._start_replay)
+        else:
+            self._start_replay()
+
+    def _start_replay(self) -> None:
+        self._replay_after = None
+        if self.closed:
+            return
+        if self.player is not None:
+            self.player.seek(0.0)
+            self.player.set_limit(None)
+            self.player.set_enabled(True)
+            self.sound.set(True)
+            self._replay_anchor = time.perf_counter()
+        if self.viewer is not None:
+            self.viewer.set_time_panel(play_state="Playing")
+            print("[panel] replaying from the start: the viewer plays the timeline in real time and "
+                  "the clip's sound runs with it")
+        elif self.player is not None:
+            print("[audio] replaying from the start; press play in the viewer at the same moment to line up")
 
     def viewer_alive(self) -> bool:
         """False once the Rerun Viewer window has been closed."""
@@ -328,7 +368,11 @@ class ControlPanel:
                 self._apply_dock()
             else:
                 self._follow_viewer()
-        self._refresh_status()
+        try:
+            self._refresh_status()
+        except Exception:
+            # Tk raises "invalid command name" once a widget is gone; the run must not die with it.
+            self.closed = True
 
     def _refresh_status(self) -> None:
         if self.player is None:

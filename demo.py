@@ -87,6 +87,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--exit-when-done", action="store_true",
                    help="quit as soon as every frame is processed (by default the viewer and the panel stay "
                         "open so the recording can be replayed with sound)")
+    p.add_argument("--auto-replay", action="store_true",
+                   help="when every frame is processed, immediately replay the recording from the start with "
+                        "the clip's sound in step (same as clicking 从头播放 in the panel)")
     return p.parse_args()
 
 
@@ -125,10 +128,18 @@ def main() -> None:
                             det_confidence=args.det_confidence, max_persons=args.max_persons,
                             detector_stride=args.detector_stride, focal=args.focal, pose_filter=args.pose_filter)
     print(f"InstantHMR runs on {pipeline.hmr.provider}")
+    # The `frame` timeline is a sequence, so the viewer needs the clip's rate to replay it in real
+    # time -- which is what keeps the sound in step when the recording is replayed at the end.
+    clip_fps = 30.0
+    if args.video:
+        cap = cv2.VideoCapture(args.video)
+        clip_fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+        cap.release()
     viewer = RerunVisualizer(None if args.no_mesh else pipeline.hmr.faces, args.mesh_alpha,
                              spawn=not args.no_viewer, save_path=args.save_rrd,
                              floor=not args.no_floor, viewer_grid=args.viewer_grid,
-                             floor_size=args.floor_size, camera_in_3d=args.show_camera_3d)
+                             floor_size=args.floor_size, camera_in_3d=args.show_camera_3d,
+                             fps=clip_fps)
     smoother = TemporalSmoother() if args.smooth else None
     player = panel = writer = None
     now = [0.0]
@@ -156,12 +167,8 @@ def main() -> None:
                              clock=lambda: now[0], has_audio=has_track,
                              video_path=args.save_video)
 
-    out_fps = 30.0
+    out_fps = clip_fps if args.video else 30.0
     if args.save_video:
-        if args.video:
-            cap = cv2.VideoCapture(args.video)
-            out_fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
-            cap.release()
         if clip_audio is None and args.video:
             from instanthmr.audio import load_clip
 
@@ -210,6 +217,8 @@ def main() -> None:
                       f"InstantHMR {result.hmr_ms:5.1f} ms")
     except KeyboardInterrupt:
         pass
+    if panel is not None:
+        panel.processing = False
     if player is not None:
         gate = player.gated_ratio()
         note = f", waited for the picture {100 * gate:.0f}% of the time" if gate else ""
@@ -231,9 +240,13 @@ def main() -> None:
     # Keep the viewer usable after the last frame: the panel must outlive the run, otherwise there is no
     # way to hear the clip again when the recording is replayed in the viewer.
     keep_open = panel is not None and not panel.closed and not args.exit_when_done and not args.no_viewer
+    if args.auto_replay and not keep_open:
+        print("[panel] --auto-replay needs the viewer and the panel to stay open; not starting it")
     if keep_open:
-        print("[panel] all frames logged: replay the timeline in the viewer, then click 从头播放 in the panel "
-              "(close the panel to quit)")
+        print("[panel] all frames logged: click 从头播放 in the panel to replay the recording from the start, "
+              "with the clip's sound in step (close the panel to quit)")
+        if args.auto_replay:
+            panel.replay()
         try:
             while not panel.closed and panel.viewer_alive():
                 panel.poll()

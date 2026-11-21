@@ -133,6 +133,7 @@ detector, then InstantHMR runs on each of them.
 | `--save-rrd` | also save the recording, to replay with `rerun file.rrd` |
 | `--save-video` | also write the 2D view with the clip's audio to an mp4 (see below) |
 | `--audio-device` | output device index for the clip's sound, as listed in the panel |
+| `--auto-replay` | after the last frame, replay the recording from the start with the sound already in step |
 
 The latencies in the tables above are the model alone, as measured in the paper. The demo's timings
 are what a frame costs end to end in Python. On an RTX 4070 with TensorRT, the InstantHMR stage takes
@@ -152,6 +153,14 @@ viewer with the switches: 原声同步播放, 严格对齐 (hold the picture to 
 **输出**, the output device -- the system default is often a headset you are not wearing, which
 looks exactly like "no sound"; pick the monitor's speakers there instead.
 
+When every frame is processed, **从头播放** in the panel replays the finished recording from the
+start and restarts the sound with it. It works through the viewer's time panel, which the demo can
+drive from the blueprint: the panel first asks the viewer to follow (cursor to the last frame) and
+then to play, and the viewer's "at the end, play from the beginning" rule restarts on frame 0 just
+as the sound starts from 0 s. `--auto-replay` does this as soon as processing ends. The viewer still
+cannot report a click back to the process, so if you press Space or drag the timeline yourself, the
+sound cannot follow; click 从头播放 again to line them up.
+
 Because the viewer cannot carry the sound, the way to watch the whole clip with picture and sound
 together is one file:
 
@@ -163,7 +172,8 @@ which writes the 2D view (image, boxes, skeleton, timings) as H.264 with the cli
 exactly as it was processed -- open it in any player. When `--save-video` is used, the panel also
 shows a **▶ 带声音的视频** button that opens that file. Other switches: `--audio` starts unmuted,
 `--audio-device N` picks the output device at start-up (the panel lists the numbers), `--no-panel`
-hides the panel, and `--exit-when-done` stops instead of keeping the viewer open for a replay.
+hides the panel, `--auto-replay` starts the synced replay as soon as the frames are done, and
+`--exit-when-done` stops instead of keeping the viewer open for a replay.
 
 ## Use it from Python
 
