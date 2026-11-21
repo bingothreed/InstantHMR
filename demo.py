@@ -70,10 +70,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--save-rrd", metavar="PATH", help="also save the Rerun recording")
     p.add_argument("--no-viewer", action="store_true", help="do not open the Rerun viewer")
     p.add_argument("--audio", action="store_true",
-                   help="video: play the clip's own audio and show a small panel to switch it on/off; "
-                        "with sync on the picture follows the audio clock so both stay aligned "
-                        "(Rerun 0.31 has no audio archetype, so it cannot be embedded in the .rrd)")
-    p.add_argument("--no-audio", dest="audio", action="store_false", help="video: no sound (default)")
+                   help="video: start with the clip's sound already on (the control panel can flip it either "
+                        "way; Rerun 0.31 has no audio archetype, so the sound cannot be embedded in the .rrd)")
+    p.add_argument("--no-audio", dest="audio", action="store_false",
+                   help="video: start muted, the panel's sound switch stays available (default)")
+    p.add_argument("--no-panel", action="store_true",
+                   help="do not open the small control panel (audio and 3D switches then only come from flags)")
     return p.parse_args()
 
 
@@ -117,34 +119,39 @@ def main() -> None:
                              floor=not args.no_floor, viewer_grid=args.viewer_grid,
                              floor_size=args.floor_size, camera_in_3d=args.show_camera_3d)
     smoother = TemporalSmoother() if args.smooth else None
-    player = ui = None
+    player = panel = None
     now = [0.0]
-    if args.audio:
-        if not args.video:
-            print("[audio] --audio only applies to --video, ignored")
-        else:
-            from instanthmr.audio import open_clip_audio
-            from instanthmr.audio_ui import AudioControl
+    if args.video:
+        from instanthmr.audio import has_audio, open_clip_audio
 
+        has_track = has_audio(args.video)
+        if has_track:
             player = open_clip_audio(args.video)
             if player is not None:
-                ui = AudioControl(player, clock=lambda: now[0])
+                player.set_enabled(bool(args.audio))
+    else:
+        has_track = False
+    if not args.no_panel:
+        from instanthmr.control_panel import ControlPanel
+
+        panel = ControlPanel(player, viewer if not args.no_viewer else None,
+                             clock=lambda: now[0], has_audio=has_track)
 
     history = []
     try:
         for i, t, rgb in frames(args):
             now[0] = t
-            if ui is not None:
-                ui.poll()
-            sync = (player is not None and player.enabled and ui is not None
-                    and not ui.closed and bool(ui.sync.get()))
+            if panel is not None:
+                panel.poll()
+            sync = (player is not None and player.enabled and panel is not None
+                    and not panel.closed and bool(panel.sync.get()))
             if sync:
                 # Audio is the master clock: hold the frames back until the sound reaches them, and jump
                 # the sound forward if a stall let it run ahead. With sync off the loop runs at full speed.
                 if player.cursor > t + 0.25:
                     player.seek(t)
-                while player.cursor + 0.02 < t and not player.at_end and not ui.closed:
-                    ui.poll()
+                while player.cursor + 0.02 < t and not player.at_end and not panel.closed:
+                    panel.poll()
                     time.sleep(0.004)
             result = pipeline(rgb, t)
             persons = smoother(result.persons, t) if smoother else result.persons
@@ -156,8 +163,8 @@ def main() -> None:
                       f"InstantHMR {result.hmr_ms:5.1f} ms")
     except KeyboardInterrupt:
         pass
-    if ui is not None:
-        ui.close()
+    if panel is not None:
+        panel.close()
     elif player is not None:
         player.stop()
     if len(history) > 1:

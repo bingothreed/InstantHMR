@@ -34,6 +34,8 @@ class RerunVisualizer:
         self.floor, self.viewer_grid = floor, viewer_grid
         self.floor_size, self.floor_spacing = floor_size, floor_spacing
         self.camera_in_3d = camera_in_3d
+        if spawn:
+            self._put_rerun_on_path()
         rr.init("instanthmr", spawn=spawn)
         if save_path:
             rr.save(save_path)
@@ -41,6 +43,23 @@ class RerunVisualizer:
         self._n_logged = 0
         self._layout_sent = False
         self._floor_logged = False
+        self._centre: Optional[np.ndarray] = None
+        self._spread = 0.4
+
+    @staticmethod
+    def _put_rerun_on_path() -> None:
+        """Make the `rerun` executable that ships inside rerun-sdk findable, so spawning works even when
+        python was started without the venv's Scripts directory on PATH."""
+        import os
+        import shutil
+
+        from rerun_sdk.rerun_cli import __file__ as cli_file  # noqa: F401  (imports the package path)
+
+        if shutil.which("rerun"):
+            return
+        cli_dir = os.path.dirname(os.path.abspath(cli_file))
+        if any(f.lower().startswith("rerun") and f.lower().endswith(".exe") for f in os.listdir(cli_dir)):
+            os.environ["PATH"] = cli_dir + os.pathsep + os.environ.get("PATH", "")
 
     def log(self, frame: int, image_rgb: np.ndarray, persons: Sequence[HMRPrediction],
             timings: dict[str, float]) -> None:
@@ -71,7 +90,9 @@ class RerunVisualizer:
             rr.log("camera", rr.Pinhole(width=w, height=h, focal_length=persons[0].focal_length,
                                         principal_point=[w / 2, h / 2], image_plane_distance=max(0.25 * depth, 0.2)))
             if not self._layout_sent:
-                self._send_layout(persons[0])
+                joints = persons[0].joints_3d_cam
+                centre = joints.mean(0)
+                self._send_layout(centre, float(np.abs(joints - centre).max()))
                 self._layout_sent = True
 
     def _log_floor(self, persons: Sequence[HMRPrediction]) -> None:
@@ -103,15 +124,21 @@ class RerunVisualizer:
             vectors=np.array([[reach, 0.0, 0.0], [0.0, 0.0, reach]], np.float32),
             colors=[(*FLOOR_AXIS_X, 255), (*FLOOR_AXIS_Z, 255)], radii=0.006), static=True)
 
-    def _send_layout(self, first: HMRPrediction) -> None:
+    def _send_layout(self, centre: np.ndarray, spread: float) -> None:
         import rerun.blueprint as rrb
 
-        centre = first.joints_3d_cam.mean(0)
-        distance = max(4 * float(np.abs(first.joints_3d_cam - centre).max()), 1.5)
-        # The 3D view lists everything under `/`, but the camera pinhole and the frame's image plane start
-        # hidden via a blueprint `EntityBehavior` override -- the same thing the viewer's own eye toggle
-        # writes, so click the eye next to `camera` in the Blueprint panel to bring them back.
-        overrides = {} if self.camera_in_3d else {"camera": rrb.EntityBehavior(visible=False)}
+        self._centre = np.asarray(centre, dtype=np.float32)
+        self._spread = float(spread)
+        distance = max(4 * self._spread, 1.5)
+        # The 3D view lists everything under `/`; the things a viewer-side query cannot reach are hidden
+        # with blueprint `EntityBehavior` overrides instead, which is the same component the viewer's own
+        # eye toggle writes. `update_layout()` re-sends this blueprint, so the demo's control panel can
+        # flip them live -- Rerun 0.31 gives the viewer no way to hand a click back to us.
+        overrides = {}
+        if not self.camera_in_3d:
+            overrides["camera"] = rrb.EntityBehavior(visible=False)
+        if not self.floor:
+            overrides["world/floor"] = rrb.EntityBehavior(visible=False)
         self.rr.send_blueprint(rrb.Blueprint(rrb.Horizontal(
             rrb.Vertical(rrb.Spatial2DView(origin="camera/image", name="Camera"),
                          rrb.TimeSeriesView(origin="timing", name="Latency (ms)"), row_shares=[3, 1]),
@@ -119,9 +146,23 @@ class RerunVisualizer:
                               background=rrb.Background(color=[25, 25, 25]),
                               line_grid=rrb.LineGrid3D(visible=self.viewer_grid),
                               eye_controls=rrb.EyeControls3D(
-                                  position=[float(centre[0]), float(centre[1]), float(centre[2] - distance)],
-                                  look_target=centre.tolist(), eye_up=[0.0, -1.0, 0.0], kind=rrb.Eye3DKind.Orbital)),
+                                  position=[float(self._centre[0]), float(self._centre[1]),
+                                            float(self._centre[2] - distance)],
+                                  look_target=self._centre.tolist(), eye_up=[0.0, -1.0, 0.0],
+                                  kind=rrb.Eye3DKind.Orbital)),
             column_shares=[2, 3])))
+
+    def update_layout(self, camera_in_3d: Optional[bool] = None, floor: Optional[bool] = None,
+                      viewer_grid: Optional[bool] = None) -> None:
+        """Flip what the 3D view draws, live, by re-sending the blueprint."""
+        if camera_in_3d is not None:
+            self.camera_in_3d = bool(camera_in_3d)
+        if floor is not None:
+            self.floor = bool(floor)
+        if viewer_grid is not None:
+            self.viewer_grid = bool(viewer_grid)
+        if self._centre is not None:
+            self._send_layout(self._centre, self._spread)
 
 
 def draw_overlay(image_rgb: np.ndarray, persons: Sequence[HMRPrediction], timings: dict[str, float]) -> np.ndarray:
