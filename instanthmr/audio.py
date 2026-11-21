@@ -1,22 +1,20 @@
-"""Play a clip's own audio track alongside the demo.
+"""The clip's own audio, streamed next to the viewer.
 
-Rerun 0.31 has no audio archetype, so the sound cannot go into the recording: the demo extracts the
-audio track to a temporary WAV and hands it to the system player while it runs.
+Rerun 0.31 ships no audio archetype, so the sound can never live inside the recording: the demo decodes
+the clip's first audio stream, streams it to the default output device with sounddevice and keeps a
+playhead in seconds. The frame loop uses that playhead to hold picture and sound together, and the small
+control window (`instanthmr.audio_ui`) turns the sound on and off while the demo runs.
 """
 from __future__ import annotations
 
-import os
-import shutil
-import subprocess
-import sys
-import tempfile
-import wave
 from typing import Optional
 
-SAMPLE_RATE = 16000
+import numpy as np
+
+SAMPLE_RATE = 48000
 
 
-def _audio_stream(path: str):
+def _open_audio(path: str):
     import av
 
     container = av.open(path)
@@ -27,7 +25,7 @@ def _audio_stream(path: str):
 def has_audio(path: str) -> bool:
     """True when the file carries at least one audio stream."""
     try:
-        container, stream = _audio_stream(path)
+        container, stream = _open_audio(path)
         ok = stream is not None
         container.close()
         return ok
@@ -35,83 +33,117 @@ def has_audio(path: str) -> bool:
         return False
 
 
-def extract_to_wav(path: str, wav_path: str) -> Optional[float]:
-    """Decode the first audio stream to 16 kHz mono s16 WAV; returns its duration in seconds."""
+class AudioClip:
+    """The decoded audio: mono float32 at `AudioClip.rate`, plus its duration in seconds."""
+
+    def __init__(self, samples: np.ndarray, rate: int = SAMPLE_RATE) -> None:
+        self.samples = np.ascontiguousarray(samples, dtype=np.float32)
+        self.rate = int(rate)
+
+    @property
+    def duration(self) -> float:
+        return len(self.samples) / self.rate
+
+
+def load_clip(path: str, rate: int = SAMPLE_RATE) -> Optional[AudioClip]:
+    """Decode the first audio stream to mono float32 at `rate`; None when there is no audio."""
     import av
 
-    container, stream = _audio_stream(path)
+    container, stream = _open_audio(path)
     if stream is None:
         container.close()
         return None
-    resampler = av.audio.resampler.AudioResampler(format="s16", layout="mono", rate=SAMPLE_RATE)
-    pcm = bytearray()
+    resampler = av.audio.resampler.AudioResampler(format="flt", layout="mono", rate=rate)
+    chunks = []
     try:
         for frame in container.decode(stream):
             for out in resampler.resample(frame) or ():
-                pcm += out.to_ndarray().tobytes()
+                chunks.append(out.to_ndarray().astype(np.float32, copy=False).reshape(-1))
         for out in resampler.resample(None) or ():
-            pcm += out.to_ndarray().tobytes()
+            chunks.append(out.to_ndarray().astype(np.float32, copy=False).reshape(-1))
     finally:
         container.close()
-    if not pcm:
+    if not chunks:
         return None
-    with wave.open(wav_path, "wb") as w:
-        w.setnchannels(1)
-        w.setsampwidth(2)
-        w.setframerate(SAMPLE_RATE)
-        w.writeframes(bytes(pcm))
-    return len(pcm) / 2 / SAMPLE_RATE
+    clip = AudioClip(np.concatenate(chunks), rate)
+    return clip if len(clip.samples) else None
 
 
-class _Player:
-    """Whatever started the sound; `stop()` silences it again."""
+class AudioPlayer:
+    """Streams a clip on the default output device. `cursor` is the playhead in seconds.
 
-    def __init__(self, kind: str, handle=None, wav_path: Optional[str] = None) -> None:
-        self.kind, self.handle, self.wav_path = kind, handle, wav_path
+    The stream stays open for the whole run; muting only silences the callback, so turning the sound back
+    on is instant. Seeking is a plain move of the sample position, so it is safe from any thread.
+    """
+
+    def __init__(self, clip: AudioClip, enabled: bool = True, volume: float = 1.0) -> None:
+        import sounddevice as sd
+
+        self.clip, self.enabled, self.volume = clip, enabled, volume
+        self._pos = 0
+        self._stream = sd.OutputStream(samplerate=clip.rate, channels=1, dtype="float32",
+                                       blocksize=1024, callback=self._callback)
+        self._stream.start()
+
+    # -- audio callback -------------------------------------------------------------------------
+    def _callback(self, outdata, frames, time_info, status) -> None:
+        samples = self.clip.samples
+        if not self.enabled:
+            outdata.fill(0)
+            return
+        pos = self._pos
+        chunk = samples[pos:pos + frames]
+        n = len(chunk)
+        if n:
+            outdata[:n, 0] = chunk * self.volume
+        if n < frames:
+            outdata[n:, 0] = 0.0
+        self._pos = min(pos + frames, len(samples))
+
+    # -- playhead -------------------------------------------------------------------------------
+    @property
+    def cursor(self) -> float:
+        return self._pos / self.clip.rate
+
+    @property
+    def duration(self) -> float:
+        return self.clip.duration
+
+    @property
+    def at_end(self) -> bool:
+        return self._pos >= len(self.clip.samples)
+
+    def seek(self, seconds: float) -> None:
+        self._pos = int(min(max(seconds, 0.0), self.duration) * self.clip.rate)
+
+    def set_enabled(self, enabled: bool) -> None:
+        self.enabled = bool(enabled)
 
     def stop(self) -> None:
         try:
-            if self.kind == "winsound":
-                import winsound
-
-                winsound.PlaySound(None, winsound.SND_PURGE)
-            elif self.handle is not None:
-                self.handle.terminate()
-                self.handle.wait(timeout=2)
+            self._stream.stop()
+            self._stream.close()
         except Exception:
             pass
-        if self.wav_path and os.path.exists(self.wav_path):
-            try:
-                os.remove(self.wav_path)
-            except OSError:
-                pass
 
 
-def play_video_audio(path: str) -> Optional[_Player]:
-    """Start the clip's audio on the system player, or print why it could not and return None."""
+def open_clip_audio(path: str, rate: int = SAMPLE_RATE) -> Optional[AudioPlayer]:
+    """Load `path`'s audio and start streaming it; None (with a printed reason) when it cannot play."""
     if not has_audio(path):
         print("[audio] no audio track in this file, nothing to play")
         return None
-    wav = os.path.join(tempfile.gettempdir(), f"instanthmr_{os.getpid()}.wav")
     try:
-        duration = extract_to_wav(path, wav)
+        clip = load_clip(path, rate)
     except Exception as e:
         print(f"[audio] could not decode the audio track: {e}")
         return None
-    if duration is None:
+    if clip is None:
         print("[audio] the audio track decoded to zero samples, nothing to play")
         return None
-    print(f"[audio] playing {duration:.1f} s from the clip (system speakers, not inside the Rerun viewer)")
-
-    if sys.platform == "win32":
-        import winsound
-
-        winsound.PlaySound(wav, winsound.SND_FILENAME | winsound.SND_ASYNC)
-        return _Player("winsound", wav_path=wav)
-    for exe in ("afplay", "aplay", "paplay"):
-        if shutil.which(exe):
-            handle = subprocess.Popen([exe, wav], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            return _Player("proc", handle=handle, wav_path=wav)
-    print("[audio] no system audio player found (afplay / aplay / paplay)")
-    os.remove(wav)
-    return None
+    try:
+        player = AudioPlayer(clip)
+    except Exception as e:  # no output device, PortAudio missing, ...
+        print(f"[audio] could not open the output device: {e}")
+        return None
+    print(f"[audio] {clip.duration:.1f} s of sound ready; toggle it in the audio panel")
+    return player
