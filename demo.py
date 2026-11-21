@@ -62,10 +62,17 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--no-floor", action="store_true", help="3D: hide the ground grid drawn under the people")
     p.add_argument("--viewer-grid", action="store_true",
                    help="3D: show the Rerun viewer's built-in line grid (hidden by default)")
+    p.add_argument("--show-camera-3d", action="store_true",
+                   help="3D: also draw the camera pinhole and the frame's image plane inside the 3D view "
+                        "(hidden by default, the 2D 'Camera' panel is unaffected)")
     p.add_argument("--floor-size", type=float, default=4.0, metavar="METRES",
                    help="3D: side length of the ground grid (default: 4.0)")
     p.add_argument("--save-rrd", metavar="PATH", help="also save the Rerun recording")
     p.add_argument("--no-viewer", action="store_true", help="do not open the Rerun viewer")
+    p.add_argument("--audio", action="store_true",
+                   help="video: play the clip's own audio through the system speakers while it runs "
+                        "(Rerun 0.31 has no audio archetype, so it cannot be embedded in the .rrd)")
+    p.add_argument("--no-audio", dest="audio", action="store_false", help="video: no sound (default)")
     return p.parse_args()
 
 
@@ -107,8 +114,16 @@ def main() -> None:
     viewer = RerunVisualizer(None if args.no_mesh else pipeline.hmr.faces, args.mesh_alpha,
                              spawn=not args.no_viewer, save_path=args.save_rrd,
                              floor=not args.no_floor, viewer_grid=args.viewer_grid,
-                             floor_size=args.floor_size)
+                             floor_size=args.floor_size, camera_in_3d=args.show_camera_3d)
     smoother = TemporalSmoother() if args.smooth else None
+    player = None
+    if args.audio:
+        if not args.video:
+            print("[audio] --audio only applies to --video, ignored")
+        else:
+            from instanthmr.audio import play_video_audio
+
+            player = play_video_audio(args.video)
 
     history = []
     try:
@@ -123,6 +138,8 @@ def main() -> None:
                       f"InstantHMR {result.hmr_ms:5.1f} ms")
     except KeyboardInterrupt:
         pass
+    if player is not None:
+        player.stop()
     if len(history) > 1:
         det, hmr = np.median(np.array(history[1:]), axis=0)
         print(f"median over {len(history) - 1} frames: detector {det:.1f} ms, InstantHMR {hmr:.1f} ms")

@@ -25,7 +25,7 @@ FLOOR_JOINTS = [13, 14, 15, 16, 17, 18, 19, 20]
 class RerunVisualizer:
     def __init__(self, faces: Optional[np.ndarray] = None, mesh_alpha: float = 0.35, spawn: bool = True,
                  save_path: Optional[str] = None, floor: bool = True, viewer_grid: bool = False,
-                 floor_size: float = 4.0, floor_spacing: float = 0.25):
+                 floor_size: float = 4.0, floor_spacing: float = 0.25, camera_in_3d: bool = False):
         import rerun as rr
 
         self.rr = rr
@@ -33,6 +33,7 @@ class RerunVisualizer:
         self.albedo = (*MESH_COLOR, int(round(255 * min(max(mesh_alpha, 0.0), 1.0))))
         self.floor, self.viewer_grid = floor, viewer_grid
         self.floor_size, self.floor_spacing = floor_size, floor_spacing
+        self.camera_in_3d = camera_in_3d
         rr.init("instanthmr", spawn=spawn)
         if save_path:
             rr.save(save_path)
@@ -107,10 +108,14 @@ class RerunVisualizer:
 
         centre = first.joints_3d_cam.mean(0)
         distance = max(4 * float(np.abs(first.joints_3d_cam - centre).max()), 1.5)
+        # `contents` is what the 3D view draws: by default only `world/**`, so the camera pinhole and the
+        # frame's image plane (both logged outside `world`) stay out of the 3D box.
+        contents = "$origin/**" if self.camera_in_3d else ["world/**"]
         self.rr.send_blueprint(rrb.Blueprint(rrb.Horizontal(
             rrb.Vertical(rrb.Spatial2DView(origin="camera/image", name="Camera"),
                          rrb.TimeSeriesView(origin="timing", name="Latency (ms)"), row_shares=[3, 1]),
-            rrb.Spatial3DView(origin="/", name="3D", background=rrb.Background(color=[25, 25, 25]),
+            rrb.Spatial3DView(origin="/", name="3D", contents=contents,
+                              background=rrb.Background(color=[25, 25, 25]),
                               line_grid=rrb.LineGrid3D(visible=self.viewer_grid),
                               eye_controls=rrb.EyeControls3D(
                                   position=[float(centre[0]), float(centre[1]), float(centre[2] - distance)],
