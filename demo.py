@@ -18,6 +18,18 @@ from instanthmr import DEFAULT_FIT, DEFAULT_MODEL, MODELS, PosePipeline
 from instanthmr.smoothing import TemporalSmoother
 from instanthmr.visualizer import RerunVisualizer
 
+# `--quality` shortcut -> released model name. `best` and `medium` are the same graph: the highest-accuracy
+# tier (EMDB-1 PA-MPJPE 44.4 mm with --fit 2), non-commercial (SAM License). `commercial` is the
+# commercially usable tier (68.3 mm).
+QUALITY_ALIASES = {
+    "best": "medium",
+    "medium": "medium",
+    "commercial": "medium-commercial",
+    "small": "small",
+    "tiny": "tiny",
+    "nano": "nano",
+}
+
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -27,6 +39,9 @@ def parse_args() -> argparse.Namespace:
     src.add_argument("--camera", type=int, metavar="INDEX", help="live camera, e.g. 0")
     p.add_argument("--model", default=DEFAULT_MODEL,
                    help=f"{', '.join(MODELS)}, or a path to an .onnx file (default: {DEFAULT_MODEL})")
+    p.add_argument("--quality", choices=tuple(QUALITY_ALIASES),
+                   help="shortcut for --model: best/medium (non-commercial, highest accuracy), "
+                        "commercial, small, tiny, nano (overrides --model; the -fitN graph is picked by --fit)")
     p.add_argument("--fit", type=int, default=DEFAULT_FIT, choices=(0, 1, 2),
                    help="kinematic fit on 1 or 2 crops per person, 0 for the network alone (default: "
                         f"{DEFAULT_FIT}; ignored for an .onnx path)")
@@ -76,6 +91,8 @@ def frames(args):
 
 def main() -> None:
     args = parse_args()
+    if args.quality:
+        args.model = QUALITY_ALIASES[args.quality]
     fit = f", kinematic fit on {args.fit} crop{'s' if args.fit > 1 else ''}" if args.fit else ""
     print(f"loading InstantHMR ({args.model}{fit}) on {args.device} and RF-DETR {args.detector}...")
     pipeline = PosePipeline(args.model, fit=args.fit, device=args.device, detector=args.detector,

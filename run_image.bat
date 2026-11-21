@@ -20,9 +20,11 @@ if not exist "%PY%" (
 rem cuDNN sub-libraries are loaded dynamically: they must be on PATH.
 set "PATH=%ROOT%.venv\Scripts;%ROOT%.venv\Lib\site-packages\nvidia\cudnn\bin;%ROOT%.venv\Lib\site-packages\nvidia\cublas\bin;%ROOT%.venv\Lib\site-packages\nvidia\cuda_runtime\bin;%ROOT%.venv\Lib\site-packages\nvidia\cufft\bin;%ROOT%.venv\Lib\site-packages\nvidia\curand\bin;%ROOT%.venv\Lib\site-packages\nvidia\cuda_nvrtc\bin;%ROOT%.venv\Lib\site-packages\nvidia\nvjitlink\bin;%PATH%"
 
-if not defined HMR_MODEL set "HMR_MODEL=%ROOT%models\instanthmr-medium-commercial.onnx"
+rem Default = highest accuracy: medium (non-commercial) + RF-DETR large.
+rem Switch tier with an extra arg, e.g.  run_image.bat photo.jpg --quality commercial
+if not defined HMR_MODEL set "HMR_MODEL=%ROOT%models\instanthmr-medium.onnx"
 if not defined HMR_DEVICE set "HMR_DEVICE=cuda"
-if not defined HMR_DETECTOR set "HMR_DETECTOR=nano"
+if not defined HMR_DETECTOR set "HMR_DETECTOR=large"
 
 if "%~1"=="" (
   set "ARGS=%ROOT%assets\test_zidane.jpg"
